@@ -92,13 +92,35 @@ async def api_put(path: str, payload: dict) -> dict[str, Any]:
     return r.json()
 
 
+def _extract_project_from_task(task: dict, included: dict) -> tuple[int | None, str]:
+    """Extrae (project_id, project_name) de una tarea + sideloads."""
+    project_id = task.get("projectId")
+    project_name = "(sin proyecto)"
+
+    if project_id and included:
+        projects_dict = included.get("projects", {})
+        if str(project_id) in projects_dict:
+            project_name = projects_dict[str(project_id)].get("name", "(sin nombre)")
+
+    return project_id, project_name
+
+
 # ============================================================
 # PROYECTOS
 # ============================================================
 @mcp.tool
-async def list_projects(status: str = "active") -> str:
-    """Lista proyectos. status: active | archived | all."""
-    data = await api_get("/projects/api/v3/projects.json", {"status": status})
+async def list_projects(status: str = "active", page_size: int = 250) -> str:
+    """Lista proyectos.
+
+    Args:
+        status: "active", "archived" o "all".
+        page_size: cuántos proyectos devolver máximo (1-500). Por defecto 250.
+    """
+    params = {
+        "status": status,
+        "pageSize": min(max(page_size, 1), 500),
+    }
+    data = await api_get("/projects/api/v3/projects.json", params)
     projects = data.get("projects", [])
     if not projects:
         return "No hay proyectos."
@@ -142,6 +164,7 @@ async def list_tasks(
     params: dict[str, Any] = {
         "includeCompletedTasks": str(completed).lower(),
         "pageSize": min(max(page_size, 1), 500),
+        "include": "projects",
     }
     # Pasamos los IDs como string CSV (formato exigido por la API v3)
     if assigned_to_user_id is not None:
@@ -151,28 +174,43 @@ async def list_tasks(
 
     data = await api_get("/projects/api/v3/tasks.json", params)
     tasks = data.get("tasks", [])
+    included = data.get("included", {})
     if not tasks:
         return "No hay tareas que coincidan con los filtros."
     lines = [f"Tareas ({len(tasks)}):"]
     for t in tasks:
         assignees = t.get("assigneeUserIds", []) or []
         due = t.get("dueAt") or "sin fecha"
-        lines.append(f"- [{t['id']}] {t.get('name')} | vence: {due} | asignados: {assignees}")
+        proj_id, proj_name = _extract_project_from_task(t, included)
+        lines.append(
+            f"- [{t['id']}] {t.get('name')} | proyecto: {proj_name} [{proj_id}] "
+            f"| vence: {due} | asignados: {assignees}"
+        )
     return "\n".join(lines)
 
 
 @mcp.tool
 async def get_task(task_id: int) -> str:
-    """Detalles completos de una tarea."""
-    data = await api_get(f"/projects/api/v3/tasks/{task_id}.json")
+    """Detalles completos de una tarea, incluyendo el proyecto al que pertenece."""
+    data = await api_get(
+        f"/projects/api/v3/tasks/{task_id}.json",
+        {"include": "projects"},
+    )
     t = data.get("task", {})
+    included = data.get("included", {})
+    project_id, project_name = _extract_project_from_task(t, included)
+
     return (
-        f"Tarea: {t.get('name')}\nID: {t.get('id')}\n"
+        f"Tarea: {t.get('name')}\n"
+        f"ID: {t.get('id')}\n"
+        f"Proyecto: {project_name} [{project_id}]\n"
         f"Descripción: {t.get('description', 'sin descripción')}\n"
         f"Estado: {'completada' if t.get('completed') else 'pendiente'}\n"
         f"Prioridad: {t.get('priority', 'normal')}\n"
-        f"Inicio: {t.get('startAt', 'N/A')}\nVencimiento: {t.get('dueAt', 'N/A')}\n"
-        f"Asignados: {t.get('assigneeUserIds', [])}\nProgreso: {t.get('progress', 0)}%"
+        f"Inicio: {t.get('startAt', 'N/A')}\n"
+        f"Vencimiento: {t.get('dueAt', 'N/A')}\n"
+        f"Asignados: {t.get('assigneeUserIds', [])}\n"
+        f"Progreso: {t.get('progress', 0)}%"
     )
 
 
@@ -345,9 +383,11 @@ async def get_user_workload(
         "assignedToUserIds": str(user_id),
         "includeCompletedTasks": str(completed).lower(),
         "pageSize": min(max(page_size, 1), 500),
+        "include": "projects",
     }
     data = await api_get("/projects/api/v3/tasks.json", params)
     tasks = data.get("tasks", [])
+    included = data.get("included", {})
     if not tasks:
         return f"El usuario {user_id} no tiene tareas pendientes."
 
@@ -369,7 +409,11 @@ async def get_user_workload(
     for t in filtered:
         due = t.get("dueAt") or "sin fecha"
         priority = t.get("priority", "normal")
-        lines.append(f"- [{t['id']}] {t.get('name')} | vence: {due} | prioridad: {priority}")
+        proj_id, proj_name = _extract_project_from_task(t, included)
+        lines.append(
+            f"- [{t['id']}] {t.get('name')} | proyecto: {proj_name} [{proj_id}] "
+            f"| vence: {due} | prioridad: {priority}"
+        )
     return "\n".join(lines)
 
 
