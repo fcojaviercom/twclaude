@@ -189,6 +189,70 @@ async def list_tasks(
     return "\n".join(lines)
 
 
+import json
+
+
+@mcp.tool
+async def debug_get_task_raw(task_id: int) -> str:
+    """[DEBUG] Devuelve el JSON crudo de la API para una tarea.
+    Sirve para ver qué nombres de campos usa Teamwork (projectId, project.id, etc.)
+    y dónde aparece el proyecto. Borrar esta herramienta cuando termine la depuración.
+    """
+    data = await api_get(
+        f"/projects/api/v3/tasks/{task_id}.json",
+        {"include": "projects"},
+    )
+    # Devolver formateado y truncado para no saturar
+    pretty = json.dumps(data, indent=2, ensure_ascii=False)
+    if len(pretty) > 8000:
+        pretty = pretty[:8000] + "\n... (respuesta truncada)"
+    return f"Respuesta cruda de Teamwork:\n{pretty}"
+
+
+@mcp.tool
+async def debug_try_complete(task_id: int, payload_variant: str = "status") -> str:
+    """[DEBUG] Intenta completar una tarea con distintos payloads para ver cuál acepta Teamwork.
+
+    Args:
+        task_id: ID de la tarea
+        payload_variant: cuál probar:
+            - "status": {"task": {"status": "completed"}}
+            - "completed_bool": {"task": {"completed": true}}
+            - "progress": {"task": {"progress": 100}}
+            - "completed_and_progress": {"task": {"completed": true, "progress": 100}}
+            - "v1_endpoint": PUT /tasks/{id}/complete.json (ruta v1)
+    """
+    if payload_variant == "v1_endpoint":
+        url = f"{BASE_URL}/tasks/{task_id}/complete.json"
+        try:
+            r = await client.put(url, json={})
+            return f"v1_endpoint: status={r.status_code}, body={r.text[:500]}"
+        except Exception as e:
+            return f"v1_endpoint: EXCEPTION {type(e).__name__}: {e}"
+
+    payloads = {
+        "status": {"task": {"status": "completed"}},
+        "completed_bool": {"task": {"completed": True}},
+        "progress": {"task": {"progress": 100}},
+        "completed_and_progress": {"task": {"completed": True, "progress": 100}},
+    }
+    if payload_variant not in payloads:
+        return f"variant inválida. Opciones: {list(payloads.keys())} + v1_endpoint"
+
+    payload = payloads[payload_variant]
+    url = f"{BASE_URL}/projects/api/v3/tasks/{task_id}.json"
+    try:
+        r = await client.patch(url, json=payload)
+        return (
+            f"Variant '{payload_variant}'\n"
+            f"Payload enviado: {json.dumps(payload)}\n"
+            f"HTTP status: {r.status_code}\n"
+            f"Respuesta cruda: {r.text[:1500]}"
+        )
+    except Exception as e:
+        return f"EXCEPTION {type(e).__name__}: {e}"
+
+
 @mcp.tool
 async def get_task(task_id: int) -> str:
     """Detalles completos de una tarea, incluyendo el proyecto al que pertenece."""
