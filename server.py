@@ -129,13 +129,25 @@ async def list_tasks(
     project_id: int | None = None,
     assigned_to_user_id: int | None = None,
     completed: bool = False,
+    page_size: int = 200,
 ) -> str:
-    """Lista tareas. Filtros opcionales: proyecto, asignado, completadas."""
-    params: dict[str, Any] = {"includeCompletedTasks": str(completed).lower()}
-    if assigned_to_user_id:
-        params["assignedToUserIds"] = assigned_to_user_id
-    if project_id:
-        params["projectIds"] = project_id
+    """Lista tareas. Filtros opcionales: proyecto, asignado, completadas.
+
+    Args:
+        project_id: filtrar por proyecto.
+        assigned_to_user_id: filtrar por usuario asignado (ID numérico).
+        completed: si True, incluye también las completadas.
+        page_size: cuántas tareas devolver máximo (1-500). Por defecto 200.
+    """
+    params: dict[str, Any] = {
+        "includeCompletedTasks": str(completed).lower(),
+        "pageSize": min(max(page_size, 1), 500),
+    }
+    # Pasamos los IDs como string CSV (formato exigido por la API v3)
+    if assigned_to_user_id is not None:
+        params["assignedToUserIds"] = str(assigned_to_user_id)
+    if project_id is not None:
+        params["projectIds"] = str(project_id)
 
     data = await api_get("/projects/api/v3/tasks.json", params)
     tasks = data.get("tasks", [])
@@ -268,18 +280,45 @@ async def list_users() -> str:
 
 
 @mcp.tool
-async def get_user_workload(user_id: int, completed: bool = False) -> str:
-    """Tareas pendientes de un empleado concreto."""
-    params = {
-        "assignedToUserIds": user_id,
+async def get_user_workload(
+    user_id: int,
+    completed: bool = False,
+    page_size: int = 200,
+) -> str:
+    """Tareas pendientes de un empleado concreto.
+
+    Args:
+        user_id: ID numérico del empleado.
+        completed: si True, incluye también las completadas.
+        page_size: cuántas tareas devolver máximo (1-500). Por defecto 200.
+    """
+    params: dict[str, Any] = {
+        # CSV string explícito - formato exigido por la API v3
+        "assignedToUserIds": str(user_id),
         "includeCompletedTasks": str(completed).lower(),
+        "pageSize": min(max(page_size, 1), 500),
     }
     data = await api_get("/projects/api/v3/tasks.json", params)
     tasks = data.get("tasks", [])
     if not tasks:
         return f"El usuario {user_id} no tiene tareas pendientes."
-    lines = [f"Carga de trabajo del usuario {user_id} ({len(tasks)} tareas):"]
+
+    # Verificación: filtrar localmente por si la API devolviera tareas
+    # que no contienen este user en sus assignees (defensa frente a bugs)
+    filtered = []
     for t in tasks:
+        assignees = t.get("assigneeUserIds", []) or []
+        if user_id in assignees:
+            filtered.append(t)
+
+    if not filtered:
+        return (
+            f"El usuario {user_id} no tiene tareas asignadas directamente. "
+            f"(La API devolvió {len(tasks)} tareas pero ninguna está asignada a este usuario)."
+        )
+
+    lines = [f"Carga de trabajo del usuario {user_id} ({len(filtered)} tareas):"]
+    for t in filtered:
         due = t.get("dueAt") or "sin fecha"
         priority = t.get("priority", "normal")
         lines.append(f"- [{t['id']}] {t.get('name')} | vence: {due} | prioridad: {priority}")
