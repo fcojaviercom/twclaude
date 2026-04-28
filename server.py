@@ -31,7 +31,22 @@ if not MCP_PATH or len(MCP_PATH) < 32:
 if not MCP_PATH.startswith("/"):
     MCP_PATH = "/" + MCP_PATH
 
-BASE_URL = f"https://{TEAMWORK_SITE}.teamwork.com"
+# Construir BASE_URL.
+# Soporta tres formatos para TEAMWORK_SITE:
+#   - "miempresa"             -> https://miempresa.teamwork.com
+#   - "miempresa.eu"          -> https://miempresa.eu.teamwork.com
+#   - "projects.miempresa.es" -> https://projects.miempresa.es  (dominio propio)
+#   - "https://projects.miempresa.es" -> se respeta tal cual
+if TEAMWORK_SITE.startswith("http://") or TEAMWORK_SITE.startswith("https://"):
+    BASE_URL = TEAMWORK_SITE.rstrip("/")
+elif "." in TEAMWORK_SITE and not TEAMWORK_SITE.endswith(".eu"):
+    # Tiene puntos y no termina en ".eu" -> es un dominio propio completo
+    BASE_URL = f"https://{TEAMWORK_SITE.rstrip('/')}"
+else:
+    # Es un site name de Teamwork (con o sin .eu)
+    BASE_URL = f"https://{TEAMWORK_SITE}.teamwork.com"
+
+print(f"==> Conectando a Teamwork en: {BASE_URL}")
 auth_str = f"{TEAMWORK_TOKEN}:X"
 auth_b64 = base64.b64encode(auth_str.encode()).decode()
 TEAMWORK_HEADERS = {
