@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: teamwork-mcp
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    envVars:
+      - key: TEAMWORK_SITE
+        sync: false
+      - key: TEAMWORK_TOKEN
+        sync: false
+      - key: MCP_PATH
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.12.0"
