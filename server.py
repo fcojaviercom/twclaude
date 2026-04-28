@@ -239,9 +239,57 @@ async def update_task(
 
 @mcp.tool
 async def complete_task(task_id: int) -> str:
-    """Marca una tarea como completada."""
-    await api_put(f"/projects/api/v3/tasks/{task_id}/complete.json", {})
+    """Marca una tarea como completada (cierra la tarea)."""
+    # En la API v3 se completa actualizando el campo "status" a "completed"
+    # vía PATCH sobre la tarea (no hay endpoint /complete dedicado).
+    payload = {"task": {"status": "completed"}}
+    await api_patch(f"/projects/api/v3/tasks/{task_id}.json", payload)
     return f"Tarea {task_id} marcada como completada."
+
+
+@mcp.tool
+async def reopen_task(task_id: int) -> str:
+    """Reabre una tarea previamente completada (vuelve a 'new')."""
+    payload = {"task": {"status": "new"}}
+    await api_patch(f"/projects/api/v3/tasks/{task_id}.json", payload)
+    return f"Tarea {task_id} reabierta."
+
+
+@mcp.tool
+async def delete_task(task_id: int, confirm: bool = False) -> str:
+    """Borra DEFINITIVAMENTE una tarea de Teamwork. Operación irreversible.
+
+    PROTOCOLO DE SEGURIDAD OBLIGATORIO:
+    Antes de llamar a esta herramienta con confirm=True, el asistente DEBE:
+    1. Llamar a get_task(task_id) para obtener los detalles de la tarea.
+    2. Mostrar al usuario el nombre, asignados, descripción y fecha.
+    3. Pedir confirmación EXPLÍCITA al usuario en el chat.
+    4. SOLO SI el usuario confirma claramente (ej: "sí, bórrala"),
+       llamar de nuevo a delete_task con confirm=True.
+
+    Args:
+        task_id: ID de la tarea a borrar.
+        confirm: Debe ser True para ejecutar el borrado. Si es False,
+                 la herramienta solo devolverá una advertencia sin borrar nada.
+
+    NUNCA usar confirm=True en una primera llamada. NUNCA borrar varias
+    tareas en bucle sin confirmación una a una. La operación es IRREVERSIBLE
+    y la API de Teamwork no ofrece deshacer.
+    """
+    if not confirm:
+        return (
+            f"⚠️ BORRADO NO EJECUTADO. Para borrar la tarea {task_id} debes:\n"
+            f"1. Mostrar al usuario los detalles de la tarea (usa get_task).\n"
+            f"2. Pedir confirmación explícita en el chat.\n"
+            f"3. Solo entonces, llamar a delete_task con confirm=True.\n"
+            f"Esta operación es irreversible."
+        )
+
+    # Ejecutar borrado real
+    url = f"{BASE_URL}/projects/api/v3/tasks/{task_id}.json"
+    response = await client.delete(url)
+    response.raise_for_status()
+    return f"✓ Tarea {task_id} BORRADA definitivamente. Esta acción no se puede deshacer."
 
 
 # ============================================================
