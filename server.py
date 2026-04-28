@@ -93,16 +93,39 @@ async def api_put(path: str, payload: dict) -> dict[str, Any]:
 
 
 def _extract_project_from_task(task: dict, included: dict) -> tuple[int | None, str]:
-    """Extrae (project_id, project_name) de una tarea + sideloads."""
-    project_id = task.get("projectId")
-    project_name = "(sin proyecto)"
+    """Extrae (project_id, project_name) de una tarea + sideloads.
 
-    if project_id and included:
-        projects_dict = included.get("projects", {})
-        if str(project_id) in projects_dict:
-            project_name = projects_dict[str(project_id)].get("name", "(sin nombre)")
+    En la API v3 de Teamwork la jerarquía es Proyecto -> Tasklist -> Tarea.
+    La tarea solo conoce su tasklist (campo 'tasklistId').
+    Para llegar al proyecto hay que:
+      tasklist_id -> included.tasklists[tasklist_id].projectId -> included.projects[project_id]
 
-    return project_id, project_name
+    Si los sideloads no incluyen tasklists pero solo hay UN proyecto en included.projects,
+    asumimos que ese es el proyecto (caso de get_task con un único include).
+    """
+    if not included:
+        return None, "(proyecto desconocido)"
+
+    projects = included.get("projects", {}) or {}
+    tasklists = included.get("tasklists", {}) or {}
+
+    tasklist_id = task.get("tasklistId")
+
+    # Camino 1: ideal - tasklist -> projectId -> proyecto
+    if tasklist_id and tasklists:
+        tl = tasklists.get(str(tasklist_id))
+        if tl:
+            project_id = tl.get("projectId") or tl.get("project", {}).get("id")
+            if project_id and str(project_id) in projects:
+                return project_id, projects[str(project_id)].get("name", "(sin nombre)")
+
+    # Camino 2: fallback - solo hay un proyecto en included, asumimos que es ese
+    if len(projects) == 1:
+        project_id_str = next(iter(projects))
+        return int(project_id_str), projects[project_id_str].get("name", "(sin nombre)")
+
+    # Camino 3: no podemos resolver
+    return None, "(proyecto desconocido)"
 
 
 # ============================================================
@@ -164,7 +187,7 @@ async def list_tasks(
     params: dict[str, Any] = {
         "includeCompletedTasks": str(completed).lower(),
         "pageSize": min(max(page_size, 1), 500),
-        "include": "projects",
+        "include": "projects,tasklists",
     }
     # Pasamos los IDs como string CSV (formato exigido por la API v3)
     if assigned_to_user_id is not None:
@@ -200,7 +223,7 @@ async def debug_get_task_raw(task_id: int) -> str:
     """
     data = await api_get(
         f"/projects/api/v3/tasks/{task_id}.json",
-        {"include": "projects"},
+        {"include": "projects,tasklists"},
     )
     # Devolver formateado y truncado para no saturar
     pretty = json.dumps(data, indent=2, ensure_ascii=False)
@@ -258,7 +281,7 @@ async def get_task(task_id: int) -> str:
     """Detalles completos de una tarea, incluyendo el proyecto al que pertenece."""
     data = await api_get(
         f"/projects/api/v3/tasks/{task_id}.json",
-        {"include": "projects"},
+        {"include": "projects,tasklists"},
     )
     t = data.get("task", {})
     included = data.get("included", {})
@@ -342,9 +365,9 @@ async def update_task(
 @mcp.tool
 async def complete_task(task_id: int) -> str:
     """Marca una tarea como completada (cierra la tarea)."""
-    # En la API v3 se completa actualizando el campo "status" a "completed"
-    # vía PATCH sobre la tarea (no hay endpoint /complete dedicado).
-    payload = {"task": {"status": "completed"}}
+    # Teamwork v3 exige AMBOS campos: completed=True + progress=100.
+    # Solo uno de los dos no completa de verdad (responde 200 pero no cambia status).
+    payload = {"task": {"completed": True, "progress": 100}}
     await api_patch(f"/projects/api/v3/tasks/{task_id}.json", payload)
     return f"Tarea {task_id} marcada como completada."
 
@@ -352,7 +375,8 @@ async def complete_task(task_id: int) -> str:
 @mcp.tool
 async def reopen_task(task_id: int) -> str:
     """Reabre una tarea previamente completada (vuelve a 'new')."""
-    payload = {"task": {"status": "new"}}
+    # Simétrico a complete_task: ambos campos a la vez.
+    payload = {"task": {"completed": False, "progress": 0}}
     await api_patch(f"/projects/api/v3/tasks/{task_id}.json", payload)
     return f"Tarea {task_id} reabierta."
 
@@ -447,7 +471,7 @@ async def get_user_workload(
         "assignedToUserIds": str(user_id),
         "includeCompletedTasks": str(completed).lower(),
         "pageSize": min(max(page_size, 1), 500),
-        "include": "projects",
+        "include": "projects,tasklists",
     }
     data = await api_get("/projects/api/v3/tasks.json", params)
     tasks = data.get("tasks", [])
