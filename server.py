@@ -303,20 +303,47 @@ async def get_task(task_id: int) -> str:
 
 @mcp.tool
 async def create_task(
-    tasklist_id: int,
     name: str,
+    tasklist_id: int | None = None,
+    parent_task_id: int | None = None,
     description: str = "",
     assignee_user_ids: list[int] | None = None,
     start_date: str | None = None,
     due_date: str | None = None,
     priority: str = "normal",
 ) -> str:
-    """Crea una tarea nueva. priority: low | normal | high. Fechas YYYY-MM-DD."""
+    """Crea una tarea nueva o una subtarea bajo una tarea padre.
+
+    Modos de uso:
+    - Tarea normal: pasar tasklist_id (NO parent_task_id).
+    - Subtarea:     pasar parent_task_id (NO tasklist_id, hereda el del padre).
+
+    Args:
+        name: Nombre de la tarea (obligatorio).
+        tasklist_id: ID de la lista donde crear la tarea. Obligatorio si es tarea normal.
+        parent_task_id: Si se indica, se creará como SUBTAREA bajo esa tarea padre.
+        description: Descripción opcional.
+        assignee_user_ids: Lista de IDs de empleados asignados.
+        start_date: Fecha inicio YYYY-MM-DD.
+        due_date: Fecha vencimiento YYYY-MM-DD.
+        priority: "low", "normal" o "high".
+    """
+    # Validación de modos: uno y solo uno de los dos campos.
+    if parent_task_id is None and tasklist_id is None:
+        return "Error: debes indicar tasklist_id (tarea normal) o parent_task_id (subtarea)."
+    if parent_task_id is not None and tasklist_id is not None:
+        return (
+            "Error: pasa solo UNO de los dos: tasklist_id (para tarea normal) "
+            "o parent_task_id (para subtarea). No los dos a la vez."
+        )
+
+    # Construir el payload común
     task_data: dict[str, Any] = {
-        "tasklistId": tasklist_id,
         "name": name,
         "priority": priority,
     }
+    if tasklist_id is not None:
+        task_data["tasklistId"] = tasklist_id
     if description:
         task_data["description"] = description
     if assignee_user_ids:
@@ -326,12 +353,16 @@ async def create_task(
     if due_date:
         task_data["dueAt"] = due_date
 
-    data = await api_post(
-        f"/projects/api/v3/tasklists/{tasklist_id}/tasks.json",
-        {"task": task_data},
-    )
+    # Elegir endpoint según el modo
+    if parent_task_id is not None:
+        endpoint = f"/projects/api/v3/tasks/{parent_task_id}/subtasks.json"
+    else:
+        endpoint = f"/projects/api/v3/tasklists/{tasklist_id}/tasks.json"
+
+    data = await api_post(endpoint, {"task": task_data})
     t = data.get("task", {})
-    return f"Tarea creada: [{t.get('id')}] {t.get('name')}"
+    kind = "Subtarea" if parent_task_id is not None else "Tarea"
+    return f"{kind} creada: [{t.get('id')}] {t.get('name')}"
 
 
 @mcp.tool
