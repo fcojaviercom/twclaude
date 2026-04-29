@@ -687,8 +687,11 @@ async def get_user_logged_time(
     from datetime import datetime, timedelta, timezone
     start_date = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
+    # IMPORTANTE: el parámetro correcto es "assignedToUserIds" (no "userIds")
+    # según la doc oficial v3 de Teamwork. "userId" antiguo está deprecado.
+    # Además, los CSV deben pasarse como string, no como int.
     params: dict[str, Any] = {
-        "userIds": str(user_id),
+        "assignedToUserIds": str(user_id),
         "startDate": start_date,
         "pageSize": min(max(page_size, 1), 500),
         "include": "projects,tasks",
@@ -702,9 +705,24 @@ async def get_user_logged_time(
     if not entries:
         return f"El usuario {user_id} no tiene tiempo registrado en los últimos {days_back} días."
 
+    # Filtro local de seguridad: descartar entradas que no sean del user pedido.
+    # La API a veces ignora parámetros si los nombres no son exactos.
+    filtered = []
+    for e in entries:
+        entry_user_id = e.get("userId") or e.get("user", {}).get("id")
+        if entry_user_id == user_id:
+            filtered.append(e)
+
+    if not filtered:
+        return (
+            f"El usuario {user_id} no tiene tiempo registrado en los últimos {days_back} días. "
+            f"(La API devolvió {len(entries)} entradas, pero ninguna era de este usuario; "
+            f"puede que el endpoint no esté filtrando correctamente — revisar logs del servidor)."
+        )
+
     total_minutes = 0
     lines = [f"Tiempo registrado por usuario {user_id} (últimos {days_back} días):"]
-    for e in entries:
+    for e in filtered:
         hours = e.get("hours", 0) or 0
         minutes = e.get("minutes", 0) or 0
         total_minutes += hours * 60 + minutes
@@ -722,7 +740,7 @@ async def get_user_logged_time(
 
     total_h = total_minutes // 60
     total_m = total_minutes % 60
-    lines.append(f"\nTotal: {total_h}h {total_m}m ({len(entries)} entradas)")
+    lines.append(f"\nTotal: {total_h}h {total_m}m ({len(filtered)} entradas)")
     return "\n".join(lines)
 
 
