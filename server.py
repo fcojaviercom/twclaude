@@ -537,6 +537,196 @@ async def get_user_workload(
 
 
 # ============================================================
+# COMENTARIOS Y ACTIVIDAD
+# ============================================================
+@mcp.tool
+async def get_task_comments(
+    task_id: int,
+    page_size: int = 50,
+    order: str = "desc",
+) -> str:
+    """Devuelve los comentarios de una tarea con autor y fecha.
+
+    Args:
+        task_id: ID de la tarea.
+        page_size: Cuántos comentarios traer (1-100). Por defecto 50.
+        order: "desc" (más recientes primero) o "asc" (más antiguos primero).
+    """
+    params: dict[str, Any] = {
+        "include": "users",
+        "pageSize": min(max(page_size, 1), 100),
+        "orderBy": "date",
+        "orderMode": order if order in ("asc", "desc") else "desc",
+    }
+    data = await api_get(f"/projects/api/v3/tasks/{task_id}/comments.json", params)
+    comments = data.get("comments", [])
+    included = data.get("included", {})
+    users = included.get("users", {}) or {}
+
+    if not comments:
+        return f"La tarea {task_id} no tiene comentarios."
+
+    lines = [f"Comentarios de la tarea {task_id} ({len(comments)}):"]
+    for c in comments:
+        # Autor
+        author_id = c.get("postedBy") or c.get("authorId") or c.get("userId")
+        author_name = "(desconocido)"
+        if author_id and str(author_id) in users:
+            u = users[str(author_id)]
+            author_name = f"{u.get('firstName', '')} {u.get('lastName', '')}".strip() or "(sin nombre)"
+
+        # Fecha
+        when = c.get("postedAt") or c.get("dateCreated") or c.get("createdAt") or "fecha desconocida"
+
+        # Cuerpo (recortar si es muy largo)
+        body = (c.get("body") or "").strip()
+        if len(body) > 400:
+            body = body[:400] + "…"
+
+        lines.append(
+            f"\n[{c.get('id')}] {author_name} ({when}):\n{body}"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool
+async def get_project_activity(
+    project_id: int,
+    days_back: int = 7,
+    page_size: int = 100,
+) -> str:
+    """Actividad reciente de un proyecto: comentarios, cambios de estado,
+    tareas creadas/completadas, etc.
+
+    Args:
+        project_id: ID del proyecto.
+        days_back: Cuántos días hacia atrás mirar. Por defecto 7.
+        page_size: Máximo de eventos a devolver (1-200). Por defecto 100.
+    """
+    from datetime import datetime, timedelta, timezone
+    start_date = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+    params: dict[str, Any] = {
+        "startDate": start_date,
+        "pageSize": min(max(page_size, 1), 200),
+    }
+    data = await api_get(
+        f"/projects/api/v3/projects/{project_id}/latestactivity.json",
+        params,
+    )
+    activities = data.get("activities", [])
+    if not activities:
+        return f"No hay actividad en el proyecto {project_id} en los últimos {days_back} días."
+
+    lines = [f"Actividad del proyecto {project_id} ({len(activities)} eventos en {days_back} días):"]
+    for a in activities:
+        when = a.get("dateTime", "fecha desconocida")
+        action_type = a.get("activityType", "?")
+        description = a.get("description") or a.get("extraDescription") or ""
+        # Usuario que hizo la acción
+        for_user = a.get("forUser") or {}
+        user_id = for_user.get("id") if isinstance(for_user, dict) else None
+        user_str = f"user:{user_id}" if user_id else "?"
+        lines.append(f"- {when} | {action_type} | {user_str} | {description[:200]}")
+    return "\n".join(lines)
+
+
+@mcp.tool
+async def get_user_activity(
+    user_id: int,
+    days_back: int = 1,
+    page_size: int = 100,
+) -> str:
+    """Actividad reciente de un usuario en todos los proyectos.
+    Permite saber qué tocó cada persona hoy o en los últimos N días.
+
+    Args:
+        user_id: ID del usuario.
+        days_back: Cuántos días hacia atrás. Por defecto 1 (hoy).
+        page_size: Máximo de eventos (1-200). Por defecto 100.
+    """
+    from datetime import datetime, timedelta, timezone
+    start_date = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+    params: dict[str, Any] = {
+        "startDate": start_date,
+        "userIds": str(user_id),
+        "pageSize": min(max(page_size, 1), 200),
+    }
+    data = await api_get("/projects/api/v3/latestactivity.json", params)
+    activities = data.get("activities", [])
+    if not activities:
+        return f"El usuario {user_id} no tiene actividad en los últimos {days_back} días."
+
+    lines = [f"Actividad del usuario {user_id} ({len(activities)} eventos en {days_back} días):"]
+    for a in activities:
+        when = a.get("dateTime", "?")
+        action_type = a.get("activityType", "?")
+        description = a.get("description") or a.get("extraDescription") or ""
+        company = a.get("company") or {}
+        project = a.get("project") or {}
+        proj_id = project.get("id") if isinstance(project, dict) else None
+        proj_str = f"proj:{proj_id}" if proj_id else ""
+        lines.append(f"- {when} | {action_type} | {proj_str} | {description[:200]}")
+    return "\n".join(lines)
+
+
+@mcp.tool
+async def get_user_logged_time(
+    user_id: int,
+    days_back: int = 7,
+    page_size: int = 200,
+) -> str:
+    """Tiempo registrado por un usuario en los últimos N días.
+
+    Args:
+        user_id: ID del usuario.
+        days_back: Cuántos días hacia atrás. Por defecto 7.
+        page_size: Máximo de entradas (1-500). Por defecto 200.
+    """
+    from datetime import datetime, timedelta, timezone
+    start_date = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+    params: dict[str, Any] = {
+        "userIds": str(user_id),
+        "startDate": start_date,
+        "pageSize": min(max(page_size, 1), 500),
+        "include": "projects,tasks",
+    }
+    data = await api_get("/projects/api/v3/time.json", params)
+    entries = data.get("timelogs", []) or data.get("time", [])
+    included = data.get("included", {}) or {}
+    projects = included.get("projects", {}) or {}
+    tasks = included.get("tasks", {}) or {}
+
+    if not entries:
+        return f"El usuario {user_id} no tiene tiempo registrado en los últimos {days_back} días."
+
+    total_minutes = 0
+    lines = [f"Tiempo registrado por usuario {user_id} (últimos {days_back} días):"]
+    for e in entries:
+        hours = e.get("hours", 0) or 0
+        minutes = e.get("minutes", 0) or 0
+        total_minutes += hours * 60 + minutes
+        date = e.get("date", "?")
+        billable = "💰" if e.get("isBillable") else "  "
+        # Resolver proyecto y tarea
+        proj_id = e.get("projectId")
+        task_id = e.get("taskId")
+        proj_name = projects.get(str(proj_id), {}).get("name", "?") if proj_id else "?"
+        task_name = tasks.get(str(task_id), {}).get("name", "—") if task_id else "—"
+        descr = (e.get("description") or "").strip()[:100]
+        lines.append(
+            f"- {date} | {hours}h {minutes}m {billable} | {proj_name} | {task_name} | {descr}"
+        )
+
+    total_h = total_minutes // 60
+    total_m = total_minutes % 60
+    lines.append(f"\nTotal: {total_h}h {total_m}m ({len(entries)} entradas)")
+    return "\n".join(lines)
+
+
+# ============================================================
 # REGISTRO DE TIEMPO
 # ============================================================
 @mcp.tool
