@@ -128,6 +128,27 @@ def _extract_project_from_task(task: dict, included: dict) -> tuple[int | None, 
     return None, "(proyecto desconocido)"
 
 
+def _format_tags(task: dict, included: dict) -> str:
+    """Devuelve un string '#tag1 #tag2' a partir de los tagIds y el sideload."""
+    if not included:
+        return ""
+    tag_ids = task.get("tagIds") or []
+    if not tag_ids:
+        # Algunas respuestas usan task.tags como lista de objetos {id, type}
+        tags_field = task.get("tags") or []
+        tag_ids = [t.get("id") for t in tags_field if isinstance(t, dict) and t.get("id")]
+    if not tag_ids:
+        return ""
+
+    tags_dict = included.get("tags", {}) or {}
+    names = []
+    for tid in tag_ids:
+        tag_obj = tags_dict.get(str(tid))
+        if tag_obj:
+            names.append(f"#{tag_obj.get('name', '?')}")
+    return " ".join(names)
+
+
 # ============================================================
 # PROYECTOS
 # ============================================================
@@ -167,33 +188,76 @@ async def get_project(project_id: int) -> str:
 
 
 # ============================================================
+# ETIQUETAS (TAGS)
+# ============================================================
+@mcp.tool
+async def list_tags(page_size: int = 200) -> str:
+    """Lista todas las etiquetas (tags) del workspace.
+
+    Args:
+        page_size: Cuántas etiquetas devolver máximo (1-500). Por defecto 200.
+    """
+    params = {"pageSize": min(max(page_size, 1), 500)}
+    data = await api_get("/projects/api/v3/tags.json", params)
+    tags = data.get("tags", [])
+    if not tags:
+        return "No hay etiquetas creadas en el workspace."
+    lines = [f"Etiquetas ({len(tags)}):"]
+    for t in tags:
+        color = t.get("color") or "(sin color)"
+        lines.append(f"- [{t['id']}] {t.get('name')} | color: {color}")
+    return "\n".join(lines)
+
+
+@mcp.tool
+async def create_tag(name: str, color: str = "") -> str:
+    """Crea una etiqueta nueva. Si ya existe una con el mismo nombre,
+    devuelve la existente (no falla).
+
+    Args:
+        name: Nombre de la etiqueta.
+        color: Color hex opcional (ej. "#F1C40F").
+    """
+    tag_data: dict[str, Any] = {"name": name}
+    if color:
+        tag_data["color"] = color
+    data = await api_post("/projects/api/v3/tags.json", {"tag": tag_data})
+    t = data.get("tag", {})
+    return f"Etiqueta lista: [{t.get('id')}] {t.get('name')} | color: {t.get('color', '(ninguno)')}"
+
+
+# ============================================================
 # TAREAS
 # ============================================================
 @mcp.tool
 async def list_tasks(
     project_id: int | None = None,
     assigned_to_user_id: int | None = None,
+    tag_ids: list[int] | None = None,
     completed: bool = False,
     page_size: int = 200,
 ) -> str:
-    """Lista tareas. Filtros opcionales: proyecto, asignado, completadas.
+    """Lista tareas. Filtros opcionales: proyecto, asignado, etiquetas, completadas.
 
     Args:
         project_id: filtrar por proyecto.
         assigned_to_user_id: filtrar por usuario asignado (ID numérico).
+        tag_ids: lista de IDs de etiquetas para filtrar (cualquier tarea con alguna).
         completed: si True, incluye también las completadas.
         page_size: cuántas tareas devolver máximo (1-500). Por defecto 200.
     """
     params: dict[str, Any] = {
         "includeCompletedTasks": str(completed).lower(),
         "pageSize": min(max(page_size, 1), 500),
-        "include": "projects,tasklists",
+        "include": "projects,tasklists,tags",
     }
     # Pasamos los IDs como string CSV (formato exigido por la API v3)
     if assigned_to_user_id is not None:
         params["assignedToUserIds"] = str(assigned_to_user_id)
     if project_id is not None:
         params["projectIds"] = str(project_id)
+    if tag_ids:
+        params["tagIds"] = ",".join(str(t) for t in tag_ids)
 
     data = await api_get("/projects/api/v3/tasks.json", params)
     tasks = data.get("tasks", [])
@@ -205,9 +269,11 @@ async def list_tasks(
         assignees = t.get("assigneeUserIds", []) or []
         due = t.get("dueAt") or "sin fecha"
         proj_id, proj_name = _extract_project_from_task(t, included)
+        tags_str = _format_tags(t, included)
+        tags_display = f" | {tags_str}" if tags_str else ""
         lines.append(
             f"- [{t['id']}] {t.get('name')} | proyecto: {proj_name} [{proj_id}] "
-            f"| vence: {due} | asignados: {assignees}"
+            f"| vence: {due} | asignados: {assignees}{tags_display}"
         )
     return "\n".join(lines)
 
@@ -223,7 +289,7 @@ async def debug_get_task_raw(task_id: int) -> str:
     """
     data = await api_get(
         f"/projects/api/v3/tasks/{task_id}.json",
-        {"include": "projects,tasklists"},
+        {"include": "projects,tasklists,tags"},
     )
     # Devolver formateado y truncado para no saturar
     pretty = json.dumps(data, indent=2, ensure_ascii=False)
@@ -281,16 +347,18 @@ async def get_task(task_id: int) -> str:
     """Detalles completos de una tarea, incluyendo el proyecto al que pertenece."""
     data = await api_get(
         f"/projects/api/v3/tasks/{task_id}.json",
-        {"include": "projects,tasklists"},
+        {"include": "projects,tasklists,tags"},
     )
     t = data.get("task", {})
     included = data.get("included", {})
     project_id, project_name = _extract_project_from_task(t, included)
+    tags_str = _format_tags(t, included)
 
     return (
         f"Tarea: {t.get('name')}\n"
         f"ID: {t.get('id')}\n"
         f"Proyecto: {project_name} [{project_id}]\n"
+        f"Etiquetas: {tags_str if tags_str else '(ninguna)'}\n"
         f"Descripción: {t.get('description', 'sin descripción')}\n"
         f"Estado: {'completada' if t.get('completed') else 'pendiente'}\n"
         f"Prioridad: {t.get('priority', 'normal')}\n"
@@ -308,6 +376,7 @@ async def create_task(
     parent_task_id: int | None = None,
     description: str = "",
     assignee_user_ids: list[int] | None = None,
+    tag_ids: list[int] | None = None,
     start_date: str | None = None,
     due_date: str | None = None,
     priority: str = "normal",
@@ -324,6 +393,7 @@ async def create_task(
         parent_task_id: Si se indica, se creará como SUBTAREA bajo esa tarea padre.
         description: Descripción opcional.
         assignee_user_ids: Lista de IDs de empleados asignados.
+        tag_ids: Lista de IDs de etiquetas a asignar a la tarea.
         start_date: Fecha inicio YYYY-MM-DD.
         due_date: Fecha vencimiento YYYY-MM-DD.
         priority: "low", "normal" o "high".
@@ -348,6 +418,8 @@ async def create_task(
         task_data["description"] = description
     if assignee_user_ids:
         task_data["assignees"] = {"userIds": assignee_user_ids}
+    if tag_ids:
+        task_data["tagIds"] = tag_ids
     if start_date:
         task_data["startAt"] = start_date
     if due_date:
@@ -371,10 +443,21 @@ async def update_task(
     name: str | None = None,
     description: str | None = None,
     assignee_user_ids: list[int] | None = None,
+    tag_ids: list[int] | None = None,
     due_date: str | None = None,
     priority: str | None = None,
 ) -> str:
-    """Actualiza una tarea (solo los campos pasados)."""
+    """Actualiza una tarea (solo los campos pasados).
+
+    Args:
+        task_id: ID de la tarea.
+        name: Nuevo nombre.
+        description: Nueva descripción.
+        assignee_user_ids: Sustituye los asignados por esta lista.
+        tag_ids: Sustituye las etiquetas por esta lista (lista vacía [] borra todas).
+        due_date: Nueva fecha de vencimiento YYYY-MM-DD.
+        priority: "low", "normal" o "high".
+    """
     update: dict[str, Any] = {}
     if name is not None:
         update["name"] = name
@@ -382,6 +465,8 @@ async def update_task(
         update["description"] = description
     if assignee_user_ids is not None:
         update["assignees"] = {"userIds": assignee_user_ids}
+    if tag_ids is not None:
+        update["tagIds"] = tag_ids
     if due_date is not None:
         update["dueAt"] = due_date
     if priority is not None:
@@ -502,7 +587,7 @@ async def get_user_workload(
         "assignedToUserIds": str(user_id),
         "includeCompletedTasks": str(completed).lower(),
         "pageSize": min(max(page_size, 1), 500),
-        "include": "projects,tasklists",
+        "include": "projects,tasklists,tags",
     }
     data = await api_get("/projects/api/v3/tasks.json", params)
     tasks = data.get("tasks", [])
@@ -529,9 +614,11 @@ async def get_user_workload(
         due = t.get("dueAt") or "sin fecha"
         priority = t.get("priority", "normal")
         proj_id, proj_name = _extract_project_from_task(t, included)
+        tags_str = _format_tags(t, included)
+        tags_display = f" | {tags_str}" if tags_str else ""
         lines.append(
             f"- [{t['id']}] {t.get('name')} | proyecto: {proj_name} [{proj_id}] "
-            f"| vence: {due} | prioridad: {priority}"
+            f"| vence: {due} | prioridad: {priority}{tags_display}"
         )
     return "\n".join(lines)
 
